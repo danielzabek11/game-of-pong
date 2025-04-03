@@ -4,5 +4,6 @@ Three Difficulty Levels
 - Easy
 - Medium
 - Hard
+
 Each difficulty changes the ball’s speed, providing different levels of challenge for the human player.
 
