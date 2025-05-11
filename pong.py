@@ -5,385 +5,749 @@ import pickle
 import sys
 import math
 
-SCREEN_WIDTH, SCREEN_HEIGHT = 740, 580
-PADDLE_WIDTH, PADDLE_HEIGHT = 10, 80
-BALL_SIZE = 10
-PADDLE_SPEED = 7
-INITIAL_HP = 2000
+import config
+from agent import QLearningAgent
 
-DIFFICULTY_SPEEDS = {
-    "easy": 3,
-    "medium": 4,
-    "hard": 5
-}
-
-# Q-learning parameters
-ALPHA = 0.022
-GAMMA = 0.966
-EPSILON_START = 1.0
-EPSILON_END = 0.01
-EPSILON_DECAY = 0.987
-NUM_BINS = 12
-
-
-ALIGNMENT_THRESHOLD = 30
-EXTRA_MOVE_PENALTY = -0.2
-WIN_POINTS = 5
-
-class QLearningAgent:
-    def __init__(self, actions, alpha, gamma, epsilon):
-        self.q_table = {}
-        self.alpha = alpha
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.actions = actions
-
-    def get_q_values(self, state):
-        if state not in self.q_table:
-            self.q_table[state] = [0.0 for _ in self.actions]
-        return self.q_table[state]
-
-    def choose_action(self, state):
-        q_values = self.get_q_values(state)
-        if random.random() < self.epsilon:
-            return random.choice(self.actions)
-        else:
-            max_q = max(q_values)
-            best_actions = [a for a, q in zip(self.actions, q_values) if q == max_q]
-            return random.choice(best_actions)
-
-    def update(self, state, action, reward, next_state):
-        q_values = self.get_q_values(state)
-        next_q_values = self.get_q_values(next_state)
-        action_index = self.actions.index(action)
-        best_next_q = max(next_q_values)
-        q_values[action_index] += self.alpha * (reward + self.gamma * best_next_q - q_values[action_index])
 
 class PongGame:
-    def __init__(self, training=False, visualize_training=False, difficulty="medium"):
+    def __init__(
+        self,
+        is_master_training_session=False,
+        visualize_master_training=False,
+        gameplay_difficulty_level="medium",
+    ):
         pygame.init()
-        self.training = training
-        self.visualize_training = visualize_training
-        self.difficulty = difficulty
-        self.ball_speed = DIFFICULTY_SPEEDS[difficulty]
-        
-        if not training or (training and visualize_training):
-            self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-            pygame.display.set_caption("Pong with Q-Learning AI")
+        self.is_master_training_session = is_master_training_session
+        self.visualize_master_training = visualize_master_training
+        self.gameplay_difficulty_level = gameplay_difficulty_level
+
+        # Load settings based on game mode (training vs. gameplay)
+        if self.is_master_training_session:
+            self.current_env_ball_speed = config.TRAINING_ENVIRONMENT_SETTINGS[
+                "ball_speed"
+            ]
+            self.ai_paddle_execution_speed = config.TRAINING_ENVIRONMENT_SETTINGS[
+                "ai_paddle_speed"
+            ]
+            self.initial_ai_hp = config.TRAINING_ENVIRONMENT_SETTINGS["ai_hp"]
+            self.ai_move_hp_penalty = config.TRAINING_ENVIRONMENT_SETTINGS[
+                "ai_penalty_move"
+            ]
+            self.ai_still_hp_penalty = config.TRAINING_ENVIRONMENT_SETTINGS[
+                "ai_penalty_still"
+            ]
+            self.ai_still_frames_threshold = config.TRAINING_ENVIRONMENT_SETTINGS[
+                "ai_penalty_still_frames"
+            ]
+            self.ai_hp_regen_on_hit = config.TRAINING_ENVIRONMENT_SETTINGS[
+                "ai_penalty_regen_on_hit"
+            ]
+            env_caption_name = f"MasterTrain ({config.TRAINING_ENVIRONMENT_SETTINGS['ball_speed']} ball, {config.TRAINING_ENVIRONMENT_SETTINGS['ai_paddle_speed']} AI speed)"
+        else:
+            self.current_env_ball_speed = config.GAMEPLAY_BALL_SPEEDS[
+                self.gameplay_difficulty_level
+            ]
+            self.ai_paddle_execution_speed = config.GAMEPLAY_AI_PADDLE_EXECUTION_SPEED[
+                self.gameplay_difficulty_level
+            ]
+            self.initial_ai_hp = config.GAMEPLAY_AI_HP_CONFIG[
+                self.gameplay_difficulty_level
+            ]
+            self.ai_move_hp_penalty = config.GAMEPLAY_AI_PENALTY_CONFIG[
+                self.gameplay_difficulty_level
+            ]["move"]
+            self.ai_still_hp_penalty = config.GAMEPLAY_AI_PENALTY_CONFIG[
+                self.gameplay_difficulty_level
+            ]["still"]
+            self.ai_still_frames_threshold = config.GAMEPLAY_AI_PENALTY_CONFIG[
+                self.gameplay_difficulty_level
+            ]["still_frames"]
+            self.ai_hp_regen_on_hit = config.GAMEPLAY_AI_PENALTY_CONFIG[
+                self.gameplay_difficulty_level
+            ]["regen_on_hit"]
+            env_caption_name = self.gameplay_difficulty_level.capitalize()
+
+        self.current_ball_speed_multiplier = 1.0
+
+        # Pygame screen setup (visual or headless)
+        if not self.is_master_training_session or self.visualize_master_training:
+            self.screen = pygame.display.set_mode(
+                (config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+            )
+            pygame.display.set_caption(f"Pong AI - {env_caption_name}")
+            try:  # Font loading
+                self.font = pygame.font.Font(None, 32)
+                self.score_font = pygame.font.Font(None, 48)
+            except:
+                self.font = pygame.font.SysFont("arial", 30)
+                self.score_font = pygame.font.SysFont("arial", 42)
+        else:  # Headless for non-visualized training
+            self.screen = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
             self.font = pygame.font.Font(None, 36)
-        else:
-            self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            self.score_font = pygame.font.Font(None, 36)
+
+        # Initialize game objects and state
         self.clock = pygame.time.Clock()
-
-        self.left_paddle = pygame.Rect(10, SCREEN_HEIGHT // 2 - PADDLE_HEIGHT // 2, PADDLE_WIDTH, PADDLE_HEIGHT)
-        self.right_paddle = pygame.Rect(SCREEN_WIDTH - 10 - PADDLE_WIDTH, SCREEN_HEIGHT // 2 - PADDLE_HEIGHT // 2, PADDLE_WIDTH, PADDLE_HEIGHT)
-        
-        self.ball = pygame.Rect(SCREEN_WIDTH // 2 - BALL_SIZE // 2, SCREEN_HEIGHT // 2 - BALL_SIZE // 2, BALL_SIZE, BALL_SIZE)
+        self.left_paddle = pygame.Rect(
+            20,
+            config.SCREEN_HEIGHT // 2 - config.PADDLE_HEIGHT // 2,
+            config.PADDLE_WIDTH,
+            config.PADDLE_HEIGHT,
+        )
+        self.right_paddle = pygame.Rect(
+            config.SCREEN_WIDTH - 20 - config.PADDLE_WIDTH,
+            config.SCREEN_HEIGHT // 2 - config.PADDLE_HEIGHT // 2,
+            config.PADDLE_WIDTH,
+            config.PADDLE_HEIGHT,
+        )
+        self.ball = pygame.Rect(
+            config.SCREEN_WIDTH // 2 - config.BALL_SIZE // 2,
+            config.SCREEN_HEIGHT // 2 - config.BALL_SIZE // 2,
+            config.BALL_SIZE,
+            config.BALL_SIZE,
+        )
         self.reset_ball()
-        
-        self.left_hp = INITIAL_HP
-        self.right_hp = INITIAL_HP
-        
-        if training:
-            initial_epsilon = EPSILON_START
-        else:
-            initial_epsilon = EPSILON_END
 
-        self.agent = QLearningAgent(actions=[-1, 0, 1], alpha=ALPHA, gamma=GAMMA, epsilon=initial_epsilon)
-        self.num_bins = NUM_BINS
-
+        self.left_hp = config.INITIAL_HP_PLAYER
+        self.right_hp = self.initial_ai_hp
+        self.ai_frames_still = 0
+        self.particles = []
         self.left_score = 0
         self.right_score = 0
         self.running = True
+        self.paused = False
 
-        self.qtable_filename = f"q_table_{difficulty}.pkl"
+        # Initialize the Q-learning agent
+        initial_epsilon = (
+            config.EPSILON_START
+            if self.is_master_training_session
+            else config.EPSILON_END
+        )
+        self.agent = QLearningAgent(
+            actions=[-1, 0, 1],  # Down, Stay, Up
+            alpha=config.ALPHA,
+            gamma=config.GAMMA,
+            epsilon=initial_epsilon,
+            is_master_training_mode_for_agent=self.is_master_training_session,
+        )
+        self.num_bins = config.NUM_BINS
+        self.qtable_filename = config.MASTER_Q_TABLE_FILENAME
+        self.qtable_filename_best = config.MASTER_Q_TABLE_FILENAME_BEST
 
-        if not self.training and os.path.exists(self.qtable_filename):
-            with open(self.qtable_filename, "rb") as f:
-                self.agent.q_table = pickle.load(f)
-            print("Loaded pre-trained Q-table from", self.qtable_filename)
+        # Load Q-table, prioritizing 'best' or resuming training
+        if os.path.exists(self.qtable_filename_best):
+            self._load_q_table()
+        elif os.path.exists(self.qtable_filename) and self.is_master_training_session:
+            self._load_q_table(filename_to_load=self.qtable_filename)
+        elif not self.is_master_training_session and not os.path.exists(
+            self.qtable_filename_best
+        ):
+            print(
+                f"WARNING: Best Q-table '{self.qtable_filename_best}' not found. AI plays sub-optimally."
+            )
+
+        # AI reaction delay setup for gameplay
+        self.ai_action_pending = 0
+        self.ai_current_delay_frames = 0
+        self.ai_target_delay_frames = 0
+        if not self.is_master_training_session:
+            min_d, max_d = config.GAMEPLAY_AI_REACTION_DELAY_FRAMES[
+                self.gameplay_difficulty_level
+            ]
+            self.ai_target_delay_frames = (
+                random.randint(min_d, max_d) if min_d <= max_d else min_d
+            )
+
+    def _load_q_table(self, filename_to_load=None):
+        # Loads Q-table from file
+        actual_filename_to_load = filename_to_load
+        if actual_filename_to_load is None:
+            if os.path.exists(self.qtable_filename_best):
+                actual_filename_to_load = self.qtable_filename_best
+            elif (
+                os.path.exists(self.qtable_filename) and self.is_master_training_session
+            ):
+                actual_filename_to_load = self.qtable_filename  # For resuming training
+            elif not self.is_master_training_session:
+                self.agent.q_table = {}
+                return
+
+        if actual_filename_to_load is None:
+            self.agent.q_table = {}
+            return
+        try:
+            with open(actual_filename_to_load, "rb") as f:
+                saved_data = pickle.load(f)
+            if isinstance(saved_data, dict):
+                self.agent.q_table = saved_data
+            elif isinstance(saved_data, tuple) and len(saved_data) == 2:
+                self.agent.q_table = saved_data[0]
+                if self.is_master_training_session:
+                    self.agent.epsilon = saved_data[1]
+            if not self.is_master_training_session:
+                self.agent.epsilon = config.EPSILON_END
+            print(
+                f"Loaded Q-table from '{actual_filename_to_load}'. Agent Epsilon: {self.agent.epsilon:.4f}"
+            )
+        except Exception as e:
+            print(
+                f"Error loading Q-table from '{actual_filename_to_load}': {e}. New Q-table."
+            )
+            self.agent.q_table = {}
+
+    def _save_q_table(self, filename_to_save_to):
+        # Saves current Q-table and agent's epsilon to a file.
+        data_to_save = (self.agent.q_table, self.agent.epsilon)
+        try:
+            with open(filename_to_save_to, "wb") as f:
+                pickle.dump(data_to_save, f)
+            print(
+                f"Q-table '{filename_to_save_to}' saved. Epsilon: {self.agent.epsilon:.4f}"
+            )
+        except Exception as e:
+            print(f"ERROR: Could not save Q-table to '{filename_to_save_to}': {e}")
 
     def reset_ball(self):
-        self.ball.center = (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
-        self.ball_vel = [
-            random.choice([-self.ball_speed, self.ball_speed]),
-            random.choice([-self.ball_speed, self.ball_speed])
-        ]
+        # Resets ball to center with random initial velocity.
+        self.ball.center = (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
+        self.current_ball_speed_multiplier = 1.0
+        act_speed = self.current_env_ball_speed * self.current_ball_speed_multiplier
+        vx = random.choice([-act_speed, act_speed])
+        vy_abs = act_speed * random.uniform(0.3, 0.7)  # Ensure some vertical movement
+        self.ball_vel = [vx, random.choice([-vy_abs, vy_abs])]
 
     def discretize(self, value, max_value, bins):
+        # Converts a continuous value into a discrete bin index.
+        if value >= max_value:
+            return bins - 1
+        if value <= 0:
+            return 0
         bin_size = max_value / bins
-        return int(value / bin_size)
+        return 0 if bin_size == 0 else min(bins - 1, int(value / bin_size))
 
     def get_state(self):
-        ball_x_bin = self.discretize(self.ball.x, SCREEN_WIDTH, self.num_bins)
-        ball_y_bin = self.discretize(self.ball.y, SCREEN_HEIGHT, self.num_bins)
-        paddle_y_bin = self.discretize(self.right_paddle.y, SCREEN_HEIGHT, self.num_bins)
-        ball_vel_x_sign = 1 if self.ball_vel[0] > 0 else -1
-        ball_vel_y_sign = 1 if self.ball_vel[1] > 0 else -1
-        return (ball_x_bin, ball_y_bin, ball_vel_x_sign, ball_vel_y_sign, paddle_y_bin)
+        # Generates a discrete state representation for the Q-learning agent.
+        paddle_y_bin = self.discretize(
+            self.right_paddle.y,
+            config.SCREEN_HEIGHT - config.PADDLE_HEIGHT,
+            self.num_bins,
+        )
+        ball_x_bin = self.discretize(self.ball.x, config.SCREEN_WIDTH, self.num_bins)
+        ball_y_bin = self.discretize(self.ball.y, config.SCREEN_HEIGHT, self.num_bins)
+        ball_vx_sign = (
+            1 if self.ball_vel[0] > 0.1 else (-1 if self.ball_vel[0] < -0.1 else 0)
+        )
+        ball_vy_sign = (
+            1 if self.ball_vel[1] > 0.1 else (-1 if self.ball_vel[1] < -0.1 else 0)
+        )
+        return (ball_x_bin, ball_y_bin, ball_vx_sign, ball_vy_sign, paddle_y_bin)
 
-    def get_reward(self):
-        if self.ball.colliderect(self.right_paddle):
-            return 1
-        elif self.ball.x > SCREEN_WIDTH:
-            return -1
-        else:
-            return 0
+    def get_reward(
+        self, hit, miss, action_taken, ai_scored_this_step, player_scored_this_step
+    ):
+        # Calculates reward/penalty based on AI's action and game events.
+        r = 0.0
+        if hit:
+            r += 5.0
+        if miss:
+            r -= 5.0
+        if ai_scored_this_step:
+            r += 10.0
+        elif player_scored_this_step:
+            r -= 10.0
+        if self.ball_vel[0] < 0 and action_taken != 0:
+            r += config.EXTRA_MOVE_PENALTY
+        return r
+
+    def _create_particles(self, x_pos, y_pos, color_val):
+        # Generates visual particles for collisions.
+        for _ in range(config.PARTICLE_COUNT):
+            self.particles.append(
+                {
+                    "x": x_pos
+                    + random.uniform(-config.BALL_SIZE / 3, config.BALL_SIZE / 3),
+                    "y": y_pos
+                    + random.uniform(-config.BALL_SIZE / 3, config.BALL_SIZE / 3),
+                    "vx": random.uniform(
+                        -config.PARTICLE_SPEED_MAX, config.PARTICLE_SPEED_MAX
+                    ),
+                    "vy": random.uniform(
+                        -config.PARTICLE_SPEED_MAX, config.PARTICLE_SPEED_MAX
+                    ),
+                    "life": config.PARTICLE_LIFESPAN + random.randint(-5, 5),
+                    "color": color_val,
+                    "size": random.randint(
+                        config.PARTICLE_SIZE_MIN, config.PARTICLE_SIZE_MAX
+                    ),
+                }
+            )
 
     def handle_ball_bounce(self):
-        if self.ball.top <= 0 or self.ball.bottom >= SCREEN_HEIGHT:
-            self.ball_vel[1] = -self.ball_vel[1]
+        # Manages ball collisions with top/bottom walls.
+        collided_with_wall = False
+        if self.ball.top <= 0:
+            self.ball.top = 0
+            self.ball_vel[1] = abs(self.ball_vel[1])
+            collided_with_wall = True
+        elif self.ball.bottom >= config.SCREEN_HEIGHT:
+            self.ball.bottom = config.SCREEN_HEIGHT
+            self.ball_vel[1] = -abs(self.ball_vel[1])
+            collided_with_wall = True
+
+        if collided_with_wall and (
+            not self.is_master_training_session or self.visualize_master_training
+        ):
+            self._create_particles(
+                self.ball.centerx, self.ball.centery, config.PARTICLE_COLOR_WALL
+            )
+            # Adds slight randomness to ball's angle after wall bounce
             current_angle = math.atan2(self.ball_vel[1], self.ball_vel[0])
-            delta_angle = random.uniform(-0.1, 0.1)
-            new_angle = current_angle + delta_angle
-            speed = math.sqrt(self.ball_vel[0]**2 + self.ball_vel[1]**2)
-            self.ball_vel[0] = speed * math.cos(new_angle)
-            self.ball_vel[1] = speed * math.sin(new_angle)
+            angle_delta = random.uniform(-0.15, 0.15)
+            new_angle = current_angle + angle_delta
+            speed_magnitude = (
+                math.sqrt(self.ball_vel[0] ** 2 + self.ball_vel[1] ** 2)
+                or self.current_env_ball_speed
+            )
+            self.ball_vel = [
+                speed_magnitude * math.cos(new_angle),
+                speed_magnitude * math.sin(new_angle),
+            ]
+            # Ensures ball maintains some vertical momentum
+            min_vertical_speed_factor = 0.2
+            if (
+                abs(self.ball_vel[1])
+                < min_vertical_speed_factor * self.current_env_ball_speed
+            ):
+                self.ball_vel[1] = math.copysign(
+                    max(
+                        abs(self.ball_vel[1]),
+                        min_vertical_speed_factor * self.current_env_ball_speed,
+                    ),
+                    self.ball_vel[1],
+                )
 
-    def predict_ball_y(self, target_x):
-        """Simulate the ball's trajectory until its x-coordinate reaches target_x.
-           Returns the predicted y-coordinate at that x position.
-        """
-        if self.ball_vel[0] <= 0:
-            return self.ball.centery
-        
-        sim_x = self.ball.x
-        sim_y = self.ball.y
-        vx = self.ball_vel[0]
-        vy = self.ball_vel[1]
-        
-        while sim_x < target_x:
-            sim_x += vx
-            sim_y += vy
-            if sim_y <= 0:
-                sim_y = -sim_y
-                vy = -vy
-            elif sim_y >= SCREEN_HEIGHT - BALL_SIZE:
-                sim_y = 2*(SCREEN_HEIGHT - BALL_SIZE) - sim_y
-                vy = -vy
-        return sim_y
+    def _apply_speed_multiplier(self):
+        # Adjusts ball's speed based on the current speed multiplier.
+        current_speed_magnitude = math.sqrt(
+            self.ball_vel[0] ** 2 + self.ball_vel[1] ** 2
+        )
+        if current_speed_magnitude == 0:
+            self.ball_vel = [
+                self.current_env_ball_speed
+                * self.current_ball_speed_multiplier
+                * random.choice([-0.707, 0.707]),
+                self.current_env_ball_speed
+                * self.current_ball_speed_multiplier
+                * random.choice([-0.707, 0.707]),
+            ]
+            return
+        target_speed = self.current_env_ball_speed * self.current_ball_speed_multiplier
+        if current_speed_magnitude > 0:
+            scale_factor = target_speed / current_speed_magnitude
+            self.ball_vel = [
+                self.ball_vel[0] * scale_factor,
+                self.ball_vel[1] * scale_factor,
+            ]
 
-    def draw(self):
-        self.screen.fill((0, 0, 0))
-        pygame.draw.rect(self.screen, (255, 255, 255), self.left_paddle)
-        pygame.draw.rect(self.screen, (255, 255, 255), self.right_paddle)
-        pygame.draw.ellipse(self.screen, (255, 255, 255), self.ball)
-        left_text = self.font.render(str(self.left_score), True, (255, 255, 255))
-        right_text = self.font.render(str(self.right_score), True, (255, 255, 255))
-        self.screen.blit(left_text, (SCREEN_WIDTH // 4, 20))
-        self.screen.blit(right_text, (SCREEN_WIDTH * 3 // 4, 20))
-        left_hp_text = self.font.render(f"HP: {self.left_hp}", True, (255, 255, 255))
-        right_hp_text = self.font.render(f"HP: {self.right_hp}", True, (255, 255, 255))
-        self.screen.blit(left_hp_text, (50, SCREEN_HEIGHT - 40))
-        self.screen.blit(right_hp_text, (SCREEN_WIDTH - 150, SCREEN_HEIGHT - 40))
-        pygame.display.flip()
-
-    def show_final_screen(self, message):
-        """Display the final message (win/loss) and wait for any key press."""
-        self.screen.fill((0, 0, 0))
-        final_text = self.font.render(message, True, (255, 255, 255))
-        prompt_text = self.font.render("Press any key to continue", True, (255, 255, 255))
-        self.screen.blit(final_text, (SCREEN_WIDTH//2 - final_text.get_width()//2, SCREEN_HEIGHT//2 - 50))
-        self.screen.blit(prompt_text, (SCREEN_WIDTH//2 - prompt_text.get_width()//2, SCREEN_HEIGHT//2 + 10))
-        pygame.display.flip()
-        waiting = True
-        while waiting:
-            for event in pygame.event.get():
-                if event.type == pygame.KEYDOWN or event.type == pygame.QUIT:
-                    waiting = False
-
-    def run(self):
-        while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-
-            keys = pygame.key.get_pressed()
-            if (keys[pygame.K_w] or keys[pygame.K_UP]) and self.left_paddle.top > 0 and self.left_hp > 0:
-                self.left_paddle.y -= PADDLE_SPEED
-                self.left_hp -= 1
-            if (keys[pygame.K_s] or keys[pygame.K_DOWN]) and self.left_paddle.bottom < SCREEN_HEIGHT and self.left_hp > 0:
-                self.left_paddle.y += PADDLE_SPEED
-                self.left_hp -= 1
-
-            state = self.get_state()
-            if self.ball_vel[0] > 0 and self.right_hp > 0:
-                predicted_y = self.predict_ball_y(self.right_paddle.x)
-                if self.right_paddle.centery < predicted_y - ALIGNMENT_THRESHOLD:
-                    action = 1
-                    if self.right_paddle.bottom < SCREEN_HEIGHT:
-                        self.right_paddle.y += PADDLE_SPEED
-                        self.right_hp -= 1
-                elif self.right_paddle.centery > predicted_y + ALIGNMENT_THRESHOLD:
-                    action = -1
-                    if self.right_paddle.top > 0:
-                        self.right_paddle.y -= PADDLE_SPEED
-                        self.right_hp -= 1
-                else:
-                    action = 0
-            else:
-                action = 0
-
-            self.ball.x += self.ball_vel[0]
-            self.ball.y += self.ball_vel[1]
-            self.handle_ball_bounce()
-
-            if self.ball.colliderect(self.left_paddle) and self.ball_vel[0] < 0:
-                self.ball_vel[0] = -self.ball_vel[0]
-            if self.ball.colliderect(self.right_paddle) and self.ball_vel[0] > 0:
-                self.ball_vel[0] = -self.ball_vel[0]
-
-            reward = self.get_reward()
-            if self.ball_vel[0] <= 0 and action != 0:
-                reward += EXTRA_MOVE_PENALTY
-
-            next_state = self.get_state()
-            self.agent.update(state, action, reward, next_state)
-
-            if self.ball.x < 0:
-                self.right_score += 1
-                self.reset_ball()
-            elif self.ball.x > SCREEN_WIDTH:
-                self.left_score += 1
-                self.reset_ball()
-
-            if (self.left_score >= WIN_POINTS or self.right_score >= WIN_POINTS or 
-                self.left_hp <= 0 or self.right_hp <= 0):
-                self.running = False
-
-            self.draw()
-            self.clock.tick(60)
-
-        if not self.training:
-            if self.left_score >= WIN_POINTS or self.right_hp <= 0:
-                final_message = "You Won!"
-            elif self.right_score >= WIN_POINTS or self.left_hp <= 0:
-                final_message = "You Lost!"
-            else:
-                final_message = "Game Over"
-            self.show_final_screen(final_message)
-        pygame.quit()
-
-def train_agent(episodes=15000, visualize=False, difficulty="medium"):
-    game = PongGame(training=True, visualize_training=visualize, difficulty=difficulty)
-    for episode in range(episodes):
-        game.reset_ball()
-        game.left_paddle.y = SCREEN_HEIGHT // 2 - PADDLE_HEIGHT // 2
-        game.right_paddle.y = SCREEN_HEIGHT // 2 - PADDLE_HEIGHT // 2
-        game.left_hp = INITIAL_HP
-        game.right_hp = INITIAL_HP
-        episode_over = False
-
-        while not episode_over:
-            if visualize:
+    def _display_get_ready_message(self, duration_ms=1500):
+        if not self.is_master_training_session or self.visualize_master_training:
+            overlay_surf = pygame.Surface(
+                (config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA
+            )
+            overlay_surf.fill((0, 0, 0, 120))
+            self.screen.blit(overlay_surf, (0, 0))
+            ready_font = self.score_font
+            ready_text_surf = ready_font.render("GET READY!", True, (255, 255, 100))
+            text_rect = ready_text_surf.get_rect(
+                center=(config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
+            )
+            self.screen.blit(ready_text_surf, text_rect)
+            pygame.display.flip()
+            start_time = pygame.time.get_ticks()
+            while pygame.time.get_ticks() - start_time < duration_ms:
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         pygame.quit()
                         sys.exit()
+                self.clock.tick(30)
 
-            if game.left_paddle.centery < game.ball.centery and game.left_paddle.bottom < SCREEN_HEIGHT and game.left_hp > 0:
-                game.left_paddle.y += PADDLE_SPEED
-                game.left_hp -= 1
-            elif game.left_paddle.centery > game.ball.centery and game.left_paddle.top > 0 and game.left_hp > 0:
-                game.left_paddle.y -= PADDLE_SPEED
-                game.left_hp -= 1
+    def _handle_point_scored_common_reset(self):
+        # Resets AI HP, paddle positions, and ball after a point.
+        self.right_hp = self.initial_ai_hp
+        self.left_paddle.centery = config.SCREEN_HEIGHT // 2
+        self.right_paddle.centery = config.SCREEN_HEIGHT // 2
+        self.reset_ball()
 
-            state = game.get_state()
-            if game.ball_vel[0] > 0 and game.right_hp > 0:
-                predicted_y = game.predict_ball_y(game.right_paddle.x)
-                if game.right_paddle.centery < predicted_y - ALIGNMENT_THRESHOLD:
-                    action = 1
-                    if game.right_paddle.bottom < SCREEN_HEIGHT:
-                        game.right_paddle.y += PADDLE_SPEED
-                        game.right_hp -= 1
-                elif game.right_paddle.centery > predicted_y + ALIGNMENT_THRESHOLD:
-                    action = -1
-                    if game.right_paddle.top > 0:
-                        game.right_paddle.y -= PADDLE_SPEED
-                        game.right_hp -= 1
-                else:
-                    action = 0
-            else:
-                action = 0
+    def perform_post_score_sequence(self, get_ready_delay_ms=1500):
+        self._handle_point_scored_common_reset()
+        if not self.is_master_training_session or self.visualize_master_training:
+            self.draw()
+            self._display_get_ready_message(duration_ms=get_ready_delay_ms)
 
-            game.ball.x += game.ball_vel[0]
-            game.ball.y += game.ball_vel[1]
-            game.handle_ball_bounce()
-
-            if game.ball.colliderect(game.left_paddle) and game.ball_vel[0] < 0:
-                game.ball_vel[0] = -game.ball_vel[0]
-            if game.ball.colliderect(game.right_paddle) and game.ball_vel[0] > 0:
-                game.ball_vel[0] = -game.ball_vel[0]
-
-            reward = game.get_reward()
-            if game.ball_vel[0] <= 0 and action != 0:
-                reward += EXTRA_MOVE_PENALTY
-            next_state = game.get_state()
-            game.agent.update(state, action, reward, next_state)
-
-            if game.ball.x < 0 or game.ball.x > SCREEN_WIDTH or game.left_hp <= 0 or game.right_hp <= 0:
-                episode_over = True
-
-            if visualize:
-                game.draw()
-                game.clock.tick(300)
-        
-        game.agent.epsilon = max(EPSILON_END, game.agent.epsilon * EPSILON_DECAY)
-
-    with open(game.qtable_filename, "wb") as f:
-        pickle.dump(game.agent.q_table, f)
-    print("Training complete. Q-table saved to", game.qtable_filename)
-
-def show_menu():
-    pygame.init()
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    pygame.display.set_caption("Pong Game Menu")
-    font = pygame.font.Font(None, 36)
-    clock = pygame.time.Clock()
-    selected_difficulty = None
-
-    while selected_difficulty is None:
-        screen.fill((0, 0, 0))
-        title = font.render("Pong Game", True, (255, 255, 255))
-        option1 = font.render("Press 1: Easy", True, (255, 255, 255))
-        option2 = font.render("Press 2: Medium", True, (255, 255, 255))
-        option3 = font.render("Press 3: Hard", True, (255, 255, 255))
-        screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 100))
-        screen.blit(option1, (SCREEN_WIDTH//2 - option1.get_width()//2, 200))
-        screen.blit(option2, (SCREEN_WIDTH//2 - option2.get_width()//2, 250))
-        screen.blit(option3, (SCREEN_WIDTH//2 - option3.get_width()//2, 300))
+    def draw_pause_screen(self):
+        overlay_surf = pygame.Surface(
+            (config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA
+        )
+        overlay_surf.fill((0, 0, 0, 180))
+        self.screen.blit(overlay_surf, (0, 0))
+        pause_texts = [
+            (self.score_font, "PAUSED", (255, 255, 255), -80),
+            (self.font, "Press R to Resume", (200, 200, 200), 0),
+            (self.font, "Press M for Menu", (200, 200, 200), 40),
+            (self.font, "Press Q to Quit", (200, 200, 200), 80),
+        ]
+        for font_obj, text_str, color_rgb, y_offset in pause_texts:
+            text_surf = font_obj.render(text_str, True, color_rgb)
+            self.screen.blit(
+                text_surf,
+                (
+                    config.SCREEN_WIDTH // 2 - text_surf.get_width() // 2,
+                    config.SCREEN_HEIGHT // 2 + y_offset,
+                ),
+            )
         pygame.display.flip()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_1:
-                    selected_difficulty = "easy"
-                elif event.key == pygame.K_2:
-                    selected_difficulty = "medium"
-                elif event.key == pygame.K_3:
-                    selected_difficulty = "hard"
-        clock.tick(60)
-    pygame.quit()
-    return selected_difficulty
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] in [
-        "train_easy", "train_medium", "train_hard",
-        "train_easy_visual", "train_medium_visual", "train_hard_visual"
-    ]:
-        visualize = ("visual" in sys.argv[1])
-        if "easy" in sys.argv[1]:
-            difficulty = "easy"
-        elif "medium" in sys.argv[1]:
-            difficulty = "medium"
-        elif "hard" in sys.argv[1]:
-            difficulty = "hard"
-        print("Starting training mode for", difficulty, "difficulty", "with visualization" if visualize else "")
-        train_agent(episodes=15000, visualize=visualize, difficulty=difficulty)
-    else:
-        while True:
-            difficulty = show_menu()
-            game = PongGame(training=False, difficulty=difficulty)
-            game.run()
+    def draw(self, current_episode_num=None):
+        self.screen.fill((10, 10, 20))
+        pygame.draw.line(
+            self.screen,
+            (50, 50, 70),
+            (config.SCREEN_WIDTH // 2, 0),
+            (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT),
+            2,
+        )
+        # Paddles and ball
+        pygame.draw.rect(
+            self.screen, (230, 230, 230), self.left_paddle, border_radius=3
+        )
+        pygame.draw.rect(
+            self.screen, (230, 230, 230), self.right_paddle, border_radius=3
+        )
+        pygame.draw.ellipse(self.screen, (255, 200, 0), self.ball)
+        # Particles
+        for p_data in self.particles:
+            size_val = int(p_data["size"] * (p_data["life"] / config.PARTICLE_LIFESPAN))
+            if size_val > 0:
+                pygame.draw.circle(
+                    self.screen,
+                    p_data["color"],
+                    (int(p_data["x"]), int(p_data["y"])),
+                    size_val,
+                )
+        # Scores
+        l_score_surf = self.score_font.render(
+            str(self.left_score), True, (220, 220, 250)
+        )
+        r_score_surf = self.score_font.render(
+            str(self.right_score), True, (220, 220, 250)
+        )
+        self.screen.blit(
+            l_score_surf, (config.SCREEN_WIDTH // 4 - l_score_surf.get_width() // 2, 15)
+        )
+        self.screen.blit(
+            r_score_surf,
+            (config.SCREEN_WIDTH * 3 // 4 - r_score_surf.get_width() // 2, 15),
+        )
+        # HP display
+        l_hp_surf = self.font.render("Player HP: ---", True, (100, 220, 100))
+        ai_hp_color = (
+            (220, 100, 100)
+            if self.right_hp < self.initial_ai_hp * 0.3
+            else (100, 220, 100)
+        )  # Color changes if AI HP low
+        r_hp_surf = self.font.render(f"AI HP: {int(self.right_hp)}", True, ai_hp_color)
+        self.screen.blit(
+            l_hp_surf, (30, config.SCREEN_HEIGHT - self.font.get_height() - 10)
+        )
+        self.screen.blit(
+            r_hp_surf,
+            (
+                config.SCREEN_WIDTH - r_hp_surf.get_width() - 30,
+                config.SCREEN_HEIGHT - self.font.get_height() - 10,
+            ),
+        )
+        # Training information overlay
+        if (
+            self.is_master_training_session
+            and self.visualize_master_training
+            and current_episode_num is not None
+        ):
+            ep_text_str = f"Ep: {current_episode_num+1} Eps: {self.agent.epsilon:.3f}"
+            ep_surf_obj = self.font.render(ep_text_str, True, (200, 200, 220))
+            self.screen.blit(
+                ep_surf_obj,
+                (
+                    config.SCREEN_WIDTH * 3 // 4 - ep_surf_obj.get_width() // 2,
+                    15 + r_score_surf.get_height() + 5,
+                ),
+            )
+        pygame.display.flip()
+
+    def show_final_screen(self, message_str):
+        # Displays the game over/win message.
+        if not pygame.display.get_init():
+            return
+        self.screen.fill((10, 10, 20))
+        final_s = self.score_font.render(message_str, True, (220, 220, 250))
+        prompt_s = self.font.render("Press any key for Menu", True, (180, 180, 200))
+        self.screen.blit(
+            final_s,
+            (
+                config.SCREEN_WIDTH // 2 - final_s.get_width() // 2,
+                config.SCREEN_HEIGHT // 2 - 50,
+            ),
+        )
+        self.screen.blit(
+            prompt_s,
+            (
+                config.SCREEN_WIDTH // 2 - prompt_s.get_width() // 2,
+                config.SCREEN_HEIGHT // 2 + 20,
+            ),
+        )
+        pygame.display.flip()
+        waiting_for_input = True
+        while waiting_for_input:
+            self.clock.tick(30)
+            for game_event in pygame.event.get():
+                if game_event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                if game_event.type == pygame.KEYDOWN:
+                    waiting_for_input = False
+
+    def run(self):
+        # Main game loop for executing a single player vs AI game.
+        if not self.is_master_training_session:
+            self.agent.epsilon = config.EPSILON_END
+            min_d, max_d = config.GAMEPLAY_AI_REACTION_DELAY_FRAMES[
+                self.gameplay_difficulty_level
+            ]
+            self.ai_target_delay_frames = (
+                random.randint(min_d, max_d) if min_d <= max_d else min_d
+            )
+            self.ai_current_delay_frames = 0
+            self.ai_action_pending = 0
+
+        while self.running:
+            # --- Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    return
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.paused = not self.paused
+                    if self.paused:
+                        if event.key == pygame.K_r:
+                            self.paused = False
+                        elif event.key == pygame.K_m:
+                            self.running = False
+                            return
+                        elif event.key == pygame.K_q:
+                            pygame.quit()
+                            sys.exit()
+            if self.paused:
+                if (
+                    not self.is_master_training_session
+                    or self.visualize_master_training
+                ):
+                    self.draw_pause_screen()
+                self.clock.tick(15)
+                continue
+
+            # --- Player Input ---
+            keys_pressed = pygame.key.get_pressed()
+            if (
+                keys_pressed[pygame.K_w] or keys_pressed[pygame.K_UP]
+            ) and self.left_paddle.top > 0:
+                self.left_paddle.y -= config.PLAYER_PADDLE_SPEED
+            if (
+                keys_pressed[pygame.K_s] or keys_pressed[pygame.K_DOWN]
+            ) and self.left_paddle.bottom < config.SCREEN_HEIGHT:
+                self.left_paddle.y += config.PLAYER_PADDLE_SPEED
+
+            # --- AI Logic (Gameplay) ---
+            current_game_state = self.get_state()
+            action_to_be_executed = 0  # Default: AI stays still
+            ai_has_moved_this_frame = False
+            if self.right_hp > 0:
+                # AI reaction delay and mistake probability
+                if self.ai_current_delay_frames >= self.ai_target_delay_frames:
+                    mistake_chance = config.GAMEPLAY_AI_MISTAKE_PROBABILITY[
+                        self.gameplay_difficulty_level
+                    ]
+                    strategic_move = self.agent.choose_action(
+                        current_game_state,
+                        make_mistake_prob_for_gameplay=mistake_chance,
+                    )
+                    self.ai_action_pending = strategic_move
+                    action_to_be_executed = self.ai_action_pending
+                    self.ai_current_delay_frames = 0
+                    min_d, max_d = config.GAMEPLAY_AI_REACTION_DELAY_FRAMES[
+                        self.gameplay_difficulty_level
+                    ]
+                    self.ai_target_delay_frames = (
+                        random.randint(min_d, max_d) if min_d <= max_d else min_d
+                    )
+                else:  # AI "thinking" (delaying)
+                    action_to_be_executed = self.ai_action_pending
+                    self.ai_current_delay_frames += 1
+
+            # Execute AI move and HP penalties
+            if self.right_hp > 0:
+                if (
+                    action_to_be_executed == 1
+                    and self.right_paddle.bottom < config.SCREEN_HEIGHT
+                ):  # Move down
+                    self.right_paddle.y += self.ai_paddle_execution_speed
+                    self.right_hp -= self.ai_move_hp_penalty
+                    ai_has_moved_this_frame = True
+                elif (
+                    action_to_be_executed == -1 and self.right_paddle.top > 0
+                ):  # Move up
+                    self.right_paddle.y -= self.ai_paddle_execution_speed
+                    self.right_hp -= self.ai_move_hp_penalty
+                    ai_has_moved_this_frame = True
+
+            # HP penalty for AI being still too long
+            self.ai_frames_still = (
+                0 if ai_has_moved_this_frame else self.ai_frames_still + 1
+            )
+            if self.ai_frames_still >= self.ai_still_frames_threshold:
+                self.right_hp -= self.ai_still_hp_penalty
+                self.ai_frames_still = 0
+            self.right_hp = max(0, self.right_hp)
+
+            # --- Ball Movement & Physics ---
+            self.ball.x += self.ball_vel[0]
+            self.ball.y += self.ball_vel[1]
+            self.handle_ball_bounce()
+
+            # --- Paddle Collisions ---
+            ball_hit_by_ai_this_frame = False
+            paddle_deflection_angle_factor = 2.5
+            # Left (player) paddle
+            if self.ball.colliderect(self.left_paddle) and self.ball_vel[0] < 0:
+                self.ball_vel[0] = abs(self.ball_vel[0])
+                self.current_ball_speed_multiplier = min(
+                    config.MAX_BALL_SPEED_MULTIPLIER,
+                    self.current_ball_speed_multiplier
+                    * config.BALL_SPEED_INCREMENT_FACTOR,
+                )
+                self._apply_speed_multiplier()
+                if (
+                    not self.is_master_training_session
+                    or self.visualize_master_training
+                ):
+                    self._create_particles(
+                        self.ball.centerx,
+                        self.ball.centery,
+                        config.PARTICLE_COLOR_PADDLE,
+                    )
+                offset_from_paddle_center = (
+                    self.ball.centery - self.left_paddle.centery
+                ) / (config.PADDLE_HEIGHT / 2)
+                self.ball_vel[1] += (
+                    offset_from_paddle_center
+                    * paddle_deflection_angle_factor
+                    * (abs(self.ball_vel[0]) * 0.15)
+                )
+            # Right (AI) paddle
+            if self.ball.colliderect(self.right_paddle) and self.ball_vel[0] > 0:
+                self.ball_vel[0] = -abs(self.ball_vel[0])
+                self.current_ball_speed_multiplier = min(
+                    config.MAX_BALL_SPEED_MULTIPLIER,
+                    self.current_ball_speed_multiplier
+                    * config.BALL_SPEED_INCREMENT_FACTOR,
+                )
+                self._apply_speed_multiplier()
+                if (
+                    not self.is_master_training_session
+                    or self.visualize_master_training
+                ):
+                    self._create_particles(
+                        self.ball.centerx,
+                        self.ball.centery,
+                        config.PARTICLE_COLOR_PADDLE,
+                    )
+                self.right_hp = min(
+                    self.initial_ai_hp, self.right_hp + self.ai_hp_regen_on_hit
+                )
+                offset_from_paddle_center = (
+                    self.ball.centery - self.right_paddle.centery
+                ) / (config.PADDLE_HEIGHT / 2)
+                self.ball_vel[1] += (
+                    offset_from_paddle_center
+                    * paddle_deflection_angle_factor
+                    * (abs(self.ball_vel[0]) * 0.15)
+                )
+
+            max_vertical_velocity_ratio = 0.95
+            if (
+                abs(self.ball_vel[0]) > 0.1
+                and abs(self.ball_vel[1])
+                > abs(self.ball_vel[0]) * max_vertical_velocity_ratio
+            ):
+                self.ball_vel[1] = math.copysign(
+                    abs(self.ball_vel[0]) * max_vertical_velocity_ratio,
+                    self.ball_vel[1],
+                )
+
+            # --- Scoring and Post-Score Sequence ---
+            point_was_scored_this_frame = False
+            if self.ball.x + config.BALL_SIZE < 0:  # AI (right) scores
+                self.right_score += 1
+                point_was_scored_this_frame = True
+            elif self.ball.x > config.SCREEN_WIDTH:  # Player (left) scores
+                self.left_score += 1
+                point_was_scored_this_frame = True
+
+            if point_was_scored_this_frame:
+                self.perform_post_score_sequence()  # Resets HP, paddles, ball; shows "Get Ready!"
+                # Reset AI reaction delay logic for next round in gameplay
+                if not self.is_master_training_session:
+                    min_d, max_d = config.GAMEPLAY_AI_REACTION_DELAY_FRAMES[
+                        self.gameplay_difficulty_level
+                    ]
+                    self.ai_target_delay_frames = (
+                        random.randint(min_d, max_d) if min_d <= max_d else min_d
+                    )
+                    self.ai_current_delay_frames = 0
+                    self.ai_action_pending = 0
+
+            # --- Particle Update ---
+            active_particles = []
+            for particle in self.particles:
+                particle["x"] += particle["vx"]
+                particle["y"] += particle["vy"]
+                particle["life"] -= 1
+                if particle["life"] > 0:
+                    active_particles.append(particle)
+            self.particles = active_particles
+
+            # --- Game End Check ---
+            if (
+                self.right_hp <= 0
+                or self.left_score >= config.WIN_POINTS
+                or self.right_score >= config.WIN_POINTS
+            ):
+                self.running = False
+
+            if not self.is_master_training_session or self.visualize_master_training:
+                self.draw()
+            self.clock.tick(60)
+
+        # --- Post-Game Loop ---
+        if not self.is_master_training_session and pygame.display.get_init():
+            final_message = "Game Over"
+            if (
+                self.right_hp <= 0
+                and self.left_score < config.WIN_POINTS
+                and self.right_score < config.WIN_POINTS
+            ):
+                final_message = "YOU WON! (AI HP Depleted)"
+            elif self.left_score >= config.WIN_POINTS:
+                final_message = "YOU WON! (Score Limit)"
+            elif self.right_score >= config.WIN_POINTS:
+                final_message = "AI WINS! (Score Limit)"
+            self.show_final_screen(final_message)
