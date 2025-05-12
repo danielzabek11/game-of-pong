@@ -37,20 +37,20 @@ GAMEPLAY_BALL_SPEEDS = {"easy": 3.5, "medium": 4.5, "hard": 5.5}
 GAMEPLAY_AI_PADDLE_EXECUTION_SPEED = {
     "easy": PLAYER_PADDLE_SPEED - 3,
     "medium": PLAYER_PADDLE_SPEED,
-    "hard": PLAYER_PADDLE_SPEED + 3,
+    "hard": PLAYER_PADDLE_SPEED,
 }
 GAMEPLAY_AI_HP_CONFIG = {"easy": 800, "medium": 900, "hard": 1000}
 GAMEPLAY_AI_PENALTY_CONFIG = {
     "easy": {"move": 1, "still": 0.5, "still_frames": 90, "regen_on_hit": 25},
-    "medium": {"move": 0.5, "still": 0.25, "still_frames": 60, "regen_on_hit": 25},
-    "hard": {"move": 0.3, "still": 0.1, "still_frames": 45, "regen_on_hit": 25},
+    "medium": {"move": 0.5, "still": 0.5, "still_frames": 60, "regen_on_hit": 25},
+    "hard": {"move": 0.3, "still": 0.5, "still_frames": 45, "regen_on_hit": 25},
 }
-GAMEPLAY_AI_MISTAKE_PROBABILITY = {"easy": 0.10, "medium": 0.00, "hard": 0.00}
-GAMEPLAY_AI_REACTION_DELAY_FRAMES = {"easy": (3, 6), "medium": (0, 0), "hard": (0, 0)}
+GAMEPLAY_AI_MISTAKE_PROBABILITY = {"easy": 0.10, "medium": 0.03, "hard": 0.01}
+GAMEPLAY_AI_REACTION_DELAY_FRAMES = {"easy": (3, 6), "medium": (1, 2), "hard": (0, 1)}
 
 # --- Ball Dynamics & Particles ---
 BALL_SPEED_INCREMENT_FACTOR = 1.15
-MAX_BALL_SPEED_MULTIPLIER = 2.5
+MAX_BALL_SPEED_MULTIPLIER = 3.0
 PARTICLE_COUNT = 10
 PARTICLE_LIFESPAN = 18
 PARTICLE_SPEED_MAX = 3

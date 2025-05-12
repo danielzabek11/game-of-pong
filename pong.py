@@ -294,12 +294,13 @@ class PongGame:
             self.ball_vel[1] = -abs(self.ball_vel[1])
             collided_with_wall = True
 
-        if collided_with_wall and (
-            not self.is_master_training_session or self.visualize_master_training
-        ):
-            self._create_particles(
-                self.ball.centerx, self.ball.centery, config.PARTICLE_COLOR_WALL
-            )
+        if collided_with_wall:
+
+            if not self.is_master_training_session:
+                self._create_particles(
+                    self.ball.centerx, self.ball.centery, config.PARTICLE_COLOR_WALL
+                )
+
             # Adds slight randomness to ball's angle after wall bounce
             current_angle = math.atan2(self.ball_vel[1], self.ball_vel[0])
             angle_delta = random.uniform(-0.15, 0.15)
@@ -449,16 +450,16 @@ class PongGame:
             (config.SCREEN_WIDTH * 3 // 4 - r_score_surf.get_width() // 2, 15),
         )
         # HP display
-        l_hp_surf = self.font.render("Player HP: ---", True, (100, 220, 100))
+        # l_hp_surf = self.font.render("Player HP: ---", True, (100, 220, 100))
         ai_hp_color = (
             (220, 100, 100)
             if self.right_hp < self.initial_ai_hp * 0.3
             else (100, 220, 100)
         )  # Color changes if AI HP low
         r_hp_surf = self.font.render(f"AI HP: {int(self.right_hp)}", True, ai_hp_color)
-        self.screen.blit(
-            l_hp_surf, (30, config.SCREEN_HEIGHT - self.font.get_height() - 10)
-        )
+        # self.screen.blit(
+        #     l_hp_surf, (30, config.SCREEN_HEIGHT - self.font.get_height() - 10)
+        # )
         self.screen.blit(
             r_hp_surf,
             (
